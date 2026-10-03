@@ -1,0 +1,41 @@
+services:
+  # ── PRism Origin Classification ML Service ──────────────────────────────────
+  ml:
+    build:
+      context: ../prism-origin-model-service
+      dockerfile: Dockerfile
+    container_name: prism-origin-model
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── PRism Node.js Backend ───────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: prism-backend
+    ports:
+      - "3001:3000"
+    environment:
+      - PORT=3000
+      - ML_SERVICE_URL=http://ml:8000
+      - ML_SERVICE_TIMEOUT_MS=4000
+      - NODE_ENV=production
+    depends_on:
+      ml:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
