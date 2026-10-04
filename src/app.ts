@@ -21,6 +21,8 @@ export function createApp() {
         event: 'http_request',
         request_id: requestId,
         method: req.method,
+        original_url: req.originalUrl,
+        path: req.path,
         status_code: res.statusCode,
         latency_ms: Date.now() - startedAt,
       }));
@@ -29,6 +31,15 @@ export function createApp() {
   });
 
   // ── Routes ──────────────────────────────────────────────────────────────────
+  const healthHandler = (_req: express.Request, res: express.Response) => {
+    res.status(200).json({
+      status: 'ok',
+      service: 'prism-backend',
+    });
+  };
+
+  app.get('/', healthHandler);
+  app.get('/health', healthHandler);
   app.use('/health', healthRouter);
   app.use('/api/ml', predictionRouter);
   app.use('/api', predictionRouter);
