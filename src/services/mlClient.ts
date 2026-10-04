@@ -115,14 +115,14 @@ export const predictSingle = predictOrigin;
  * Returns a BatchPredictionResponse or a typed error.
  *
  * The Python service expects the payload as:
- *   { "findings": [ <feature_row>, ... ] }
+ *   { "items": [ <feature_row>, ... ] }
  */
 export async function predictOriginBatch(
   featureRows: OriginModelFeatures[],
 ): Promise<MlResult<BatchPredictionResponse>> {
   return mlPost(
     '/predict/batch',
-    { findings: featureRows },
+    { items: featureRows },
     (raw) => {
       const parsed = batchPredictionResponseSchema.safeParse(raw);
       if (!parsed.success) {

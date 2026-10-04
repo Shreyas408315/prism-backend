@@ -6,6 +6,54 @@ afterEach(() => {
 });
 
 describe('mlClient', () => {
+  it('sends batch feature rows in items and validates the batch response', async () => {
+    const features = {
+      rule_id: 'no-unused-vars',
+      rule_family: 'possible-problems',
+      severity: 2,
+      is_error: 1,
+      message_length: 30,
+      has_fix: 0,
+      fix_text_length: 0,
+      fix_range_length: 0,
+      has_suggestions: 0,
+      suggestion_count: 0,
+      changed_line_count: 1,
+      file_size_lines: 50,
+      start_line: 5,
+      finding_start_line_ratio: 0.1,
+      finding_span_lines: 1,
+      finding_span_columns: 1,
+      pr_change_code_lines: 1,
+      pr_total_findings_in_file: 1,
+      same_rule_findings_in_file: 1,
+      same_rule_findings_in_repo: 1,
+      finding_overlaps_change: 1,
+      finding_change_distance: 0,
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        model_version: 'prism-origin-ensemble-clean-v1',
+        threshold: 0.574674670640332,
+        predictions: [],
+      }),
+    } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await predictOriginBatch([features]);
+
+    expect(result.ok).toBe(true);
+    const requestOptions = fetchMock.mock.calls[0]?.[1];
+    const requestBody = JSON.parse(String(requestOptions?.body));
+    expect(requestBody.items).toEqual([features]);
+    expect(requestBody).not.toHaveProperty('findings');
+    if (result.ok) {
+      expect(result.data.model_version).toBe('prism-origin-ensemble-clean-v1');
+      expect(result.data.predictions).toEqual([]);
+    }
+  });
+
   it('validates a successful prediction response', async () => {
     vi.stubGlobal(
       'fetch',
