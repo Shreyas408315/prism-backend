@@ -66,12 +66,17 @@ The repository includes a docker-compose.yml file that brings up:
 
 - an ML service container using the existing origin-model artifact
 - a Node backend container that connects over the private service URL
+- a PostgreSQL 16 container for local persistence
 
 Run:
 
 ```bash
+docker compose up -d --wait postgres
+npm run db:migrate
 docker compose up --build
 ```
+
+Set `DATABASE_URL` in `.env` for local migration commands. Compose configures the backend container to use the private PostgreSQL service; production deployments must provide their own `DATABASE_URL` and should not expose PostgreSQL publicly.
 
 Then verify:
 
@@ -175,6 +180,7 @@ npm install
 npm run dev
 npm test
 npm run build
+npm run db:migrate
 npm start
 ```
 

@@ -20,6 +20,10 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
+COPY migrations ./migrations
+COPY scripts ./scripts
+COPY src/config ./src/config
+COPY src/db ./src/db
 
 EXPOSE 3000
 

@@ -9,6 +9,10 @@ vi.mock('../src/services/mlClient.js', () => ({
   checkMlHealth: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock('../src/repositories/reviewRepository.js', () => ({
+  persistReviewEvaluation: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { predictBatch, checkMlHealth } from '../src/services/mlClient.js';
 
 const app = createApp();

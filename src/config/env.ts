@@ -5,6 +5,7 @@ dotenv.config();
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(3000),
+  DATABASE_URL: z.string().url().optional(),
   ML_SERVICE_URL: z.string().url().optional(),
   ML_SERVICE_TIMEOUT_MS: z.coerce.number().default(4000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -26,6 +27,10 @@ const mlServiceUrl = parsed.data.ML_SERVICE_URL ??
 
 if (!mlServiceUrl) {
   throw new Error('ML_SERVICE_URL must be set in production');
+}
+
+if (parsed.data.NODE_ENV === 'production' && !parsed.data.DATABASE_URL) {
+  throw new Error('DATABASE_URL must be set in production');
 }
 
 const mlServiceHostname = new URL(mlServiceUrl).hostname.toLowerCase();

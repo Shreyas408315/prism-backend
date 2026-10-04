@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { buildOriginModelFeatures } from './featureBuilder.js';
 import { predictBatch, checkMlHealth } from './mlClient.js';
+import { persistReviewEvaluation } from '../repositories/reviewRepository.js';
 import {
   type RawFindingInput,
   type FeatureExtractionContext,
@@ -90,9 +91,51 @@ export async function evaluateReview(
       }));
     }
   };
+  const persistEvaluation = async (
+    response: ReviewEvaluationResponse,
+    featureRows: ReturnType<typeof buildOriginModelFeatures>[] = [],
+    modelVersion?: {
+      model_version: string;
+      positive_class: string;
+      threshold: number;
+    },
+  ) => {
+    await persistReviewEvaluation({
+      review: {
+        id: response.review_id,
+        repository: response.repository,
+        pull_request: String(response.pull_request),
+        ml_status: response.ml_status,
+        total_findings: response.total_findings,
+        introduced_count: response.introduced_count,
+        pre_existing_count: response.pre_existing_count,
+      },
+      modelVersion: modelVersion ? {
+        ...modelVersion,
+        feature_count: 22,
+        model_family: 'ensemble',
+      } : undefined,
+      findings: response.findings.map((finding, index) => ({
+        review_id: response.review_id,
+        finding_id: finding.finding_id,
+        rule_id: finding.rule_id,
+        file_path: finding.file_path,
+        start_line: finding.start_line,
+        origin_decision: finding.origin_decision,
+        decision_source: finding.decision_source,
+        ml_status: finding.ml_status,
+        risk_score: finding.risk_score,
+        threshold: finding.threshold,
+        model_version: finding.decision_source === 'MODEL' ? modelVersion?.model_version : null,
+        component_scores: finding.component_scores,
+        features: finding.features ?? featureRows[index],
+        raw_finding: request.findings[index]?.finding,
+      })),
+    });
+  };
 
   if (request.findings.length === 0) {
-    return {
+    const response: ReviewEvaluationResponse = {
       review_id,
       repository: request.repository,
       pull_request: request.pull_request,
@@ -103,6 +146,8 @@ export async function evaluateReview(
       findings: [],
       timestamp,
     };
+    await persistEvaluation(response);
+    return response;
   }
 
   // ── Step 1: build features ──
@@ -133,6 +178,7 @@ export async function evaluateReview(
       timestamp,
     };
 
+    await persistEvaluation(fallbackResponse, featureRows);
     return fallbackResponse;
   }
 
@@ -178,6 +224,11 @@ export async function evaluateReview(
     timestamp,
   };
 
+  await persistEvaluation(successResponse, featureRows, {
+    model_version,
+    positive_class: predictions[0]?.positive_class ?? 'INTRODUCED',
+    threshold,
+  });
   return successResponse;
 }
 
