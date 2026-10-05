@@ -1,13 +1,13 @@
 # PRism Backend
 
-PRism Backend is the Node.js orchestration layer for the PRism code-review intelligence pipeline. It validates raw findings, builds the exact 22-feature contract expected by the Python origin-classification model, calls the deployed ML service, and returns an enriched review result without crashing the PR pipeline when the model is unavailable.
+PRism Backend is the Node.js orchestration layer for the PRism code-review intelligence pipeline. It validates pre-engineered 43-field ESLint findings, calls the deployed surface-classification model, and returns an enriched review result without crashing the PR pipeline when the model is unavailable.
 
 ## Architecture
 
 The overall deployment model is intentionally split:
 
-- Python ML service: PRism origin model, responsible only for inference.
-- Node.js backend: PRism orchestration/API layer, responsible for validation, feature assembly, request/response shaping, and review-level orchestration.
+- Python ML service: ESLint surface hybrid model, responsible only for inference.
+- Node.js backend: PRism orchestration/API layer, responsible for validating engineered feature rows, request/response shaping, and review-level orchestration.
 
 The backend talks to the ML service over HTTP using the environment-configured URL:
 
@@ -58,13 +58,13 @@ The Node server calls:
 
 The ML service does not run inside the Node container. The architecture remains:
 
-backend -> HTTP -> ML service -> prism_ensemble_clean.joblib
+backend -> HTTP -> ML service -> eslint_surface_hybrid_ensemble.joblib
 
 ## Docker Compose
 
 The repository includes a docker-compose.yml file that brings up:
 
-- an ML service container using the existing origin-model artifact
+- an ML service container using the surface hybrid artifact
 - a Node backend container that connects over the private service URL
 - a PostgreSQL 16 container for local persistence
 
@@ -77,6 +77,7 @@ docker compose up --build
 ```
 
 Set `DATABASE_URL` in `.env` for local migration commands. Compose configures the backend container to use the private PostgreSQL service; production deployments must provide their own `DATABASE_URL` and should not expose PostgreSQL publicly.
+Run `npm run db:migrate` against the production database before deploying the backend update; migration `002_surface_model.sql` adds surface/suppression summary counts without rewriting legacy review history.
 
 Then verify:
 
@@ -98,7 +99,7 @@ Returns:
 
 ### POST /api/ml/predict
 
-Accepts a single finding payload, builds the exact 22 ML features, calls the model, and returns the validated ML response.
+Accepts one already-engineered 43-field finding (the same shape as the model service request), calls the model, and returns component probabilities, ensemble surface probability, threshold, and `surface`/`suppress` decision.
 
 ### POST /api/ml/predict/batch
 
@@ -109,7 +110,7 @@ Accepts an array of findings and calls the model batch endpoint.
 Applies the orchestration process:
 
 1. Validate request shape.
-2. Convert raw findings into the exact 22-feature contract.
+2. Validate each pre-engineered 43-feature row.
 3. Call the ML service.
 4. Return enriched review findings.
 5. Fall back deterministically if the model is unavailable.
@@ -131,39 +132,14 @@ The model stays private and is not deployed inside the Node container.
 
 ## ML service contract
 
-The Python service expects exactly these 22 fields in order:
-
-1. rule_id
-2. rule_family
-3. severity
-4. is_error
-5. message_length
-6. has_fix
-7. fix_text_length
-8. fix_range_length
-9. has_suggestions
-10. suggestion_count
-11. changed_line_count
-12. file_size_lines
-13. start_line
-14. finding_start_line_ratio
-15. finding_span_lines
-16. finding_span_columns
-17. pr_change_code_lines
-18. pr_total_findings_in_file
-19. same_rule_findings_in_file
-20. same_rule_findings_in_repo
-21. finding_overlaps_change
-22. finding_change_distance
-
-The backend uses a strict Zod schema to validate all ML payloads and rejects any contract drift.
+The model service accepts the exact 43 fields supplied in the prediction request. The backend applies a strict Zod schema and rejects contract drift. For `/api/review/evaluate`, each array entry wraps the model row as `{ "features": { ...43 fields... }, "finding_id": "...", "file_path": "..." }`; `finding_id` is optional and `file_path` is required for review metadata. The service median-imputes twelve additional artifact features; see the model service schema for details.
 
 ## Fallback behavior
 
 When the model is unavailable, the backend never crashes the review flow. Instead:
 
-- if finding_overlaps_change is true or equivalent, the origin decision is INTRODUCED
-- otherwise it is PRE_EXISTING
+- if `finding_overlaps_change` is 1, the fallback decision is `surface`
+- otherwise it is `suppress`
 - decision_source is deterministic_fallback
 - ml_status is UNAVAILABLE or ERROR
 - the backend still returns a review object with a UUID-based review_id

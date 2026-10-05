@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
+import { surfaceFeatures } from './fixtures/surfaceFeatures.js';
 
 // Mock mlClient so integration tests don't require the Python service
 vi.mock('../src/services/mlClient.js', () => ({
@@ -37,26 +38,9 @@ const VALID_BODY = {
   pull_request: 42,
   findings: [
     {
-      finding: {
-        rule_id: 'no-unused-vars',
-        severity: 2,
-        message: "'x' is defined but never used",
-        start_line: 10,
-        start_column: 4,
-        end_line: 10,
-        end_column: 5,
-        has_fix: false,
-        has_suggestions: false,
-        suggestion_count: 0,
-        file_path: 'src/index.ts',
-      },
-      context: {
-        fileTotalLines: 200,
-        changedLines: [9, 10, 11],
-        prTotalFindingsInFile: 3,
-        sameRuleFindingsInFile: 2,
-        sameRuleFindingsInRepo: 5,
-      },
+      finding_id: 'finding-1',
+      file_path: 'src/index.js',
+      features: surfaceFeatures,
     },
   ],
 };
@@ -64,20 +48,18 @@ const VALID_BODY = {
 const ML_RESPONSE = {
   ok: true as const,
   data: {
-    model_version: 'prism-origin-ensemble-clean-v1',
-    threshold: 0.574674670640332,
+    model_version: 'eslint-surface-hybrid-ensemble-v1',
+    threshold: 0.505,
     predictions: [
       {
-        model_version: 'prism-origin-ensemble-clean-v1',
-        positive_class: 'INTRODUCED' as const,
-        risk_score: 0.838937,
-        decision: 'INTRODUCED' as const,
-        threshold: 0.574674670640332,
-        component_scores: {
-          random_forest: 0.9,
-          logistic_regression: 0.82,
-          xgboost: 0.81,
+        probabilities: {
+          random_forest: 0.5878,
+          logistic_regression: 0.6384,
+          xgboost: 0.5165,
         },
+        ensemble_surface_probability: 0.5633,
+        threshold: 0.505,
+        decision: 'surface' as const,
       },
     ],
   },
@@ -99,39 +81,36 @@ describe('POST /api/review/evaluate', () => {
     expect(res.status).toBe(200);
     expect(res.body.ml_status).toBe('OK');
     expect(res.body.total_findings).toBe(1);
-    expect(res.body.introduced_count).toBe(1);
-    expect(res.body.findings[0].origin_decision).toBe('INTRODUCED');
+    expect(res.body.surface_count).toBe(1);
+    expect(res.body.suppressed_count).toBe(0);
+    expect(res.body.findings[0].decision).toBe('surface');
     expect(res.body.findings[0].decision_source).toBe('MODEL');
-    expect(res.body.findings[0].risk_score).toBeCloseTo(0.838937, 4);
+    expect(res.body.findings[0].ensemble_surface_probability).toBeCloseTo(0.5633, 4);
   });
 
   it.each([
-    [1, 'INTRODUCED'],
-    [0, 'PRE_EXISTING'],
-  ] as const)('uses overlap=%s for fallback and preserves the raw finding', async (overlap, decision) => {
+    [1, 'surface'],
+    [0, 'suppress'],
+  ] as const)('uses overlap=%s for fallback', async (overlap, decision) => {
     vi.mocked(predictBatch).mockResolvedValueOnce({
       ok: false,
       error: { kind: 'NETWORK', message: 'Connection refused' },
     });
-    const finding = {
-      ...VALID_BODY.findings[0].finding,
-      finding_overlaps_change: overlap === 1,
-    };
+    const features = { ...surfaceFeatures, finding_overlaps_change: overlap };
     const res = await request(app).post('/api/review/evaluate').send({
       ...VALID_BODY,
-      findings: [{ finding, context: VALID_BODY.findings[0].context }],
+      findings: [{
+        finding_id: 'finding-fallback',
+        file_path: 'src/index.js',
+        features,
+      }],
     });
 
     expect(res.status).toBe(200);
     expect(res.body.ml_status).toBe('UNAVAILABLE');
     expect(res.body.findings[0].ml_status).toBe('UNAVAILABLE');
     expect(res.body.findings[0].decision_source).toBe('deterministic_fallback');
-    expect(res.body.findings[0].origin_decision).toBe(decision);
-    expect(res.body.findings[0].raw_finding).toMatchObject({
-      rule_id: 'no-unused-vars',
-      message: "'x' is defined but never used",
-      finding_overlaps_change: overlap === 1,
-    });
+    expect(res.body.findings[0].decision).toBe(decision);
   });
 
   it('returns an empty findings array without calling ML', async () => {

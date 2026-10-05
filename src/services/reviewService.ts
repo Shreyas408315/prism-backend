@@ -1,74 +1,33 @@
-import { randomUUID } from 'crypto';
-import { buildOriginModelFeatures } from './featureBuilder.js';
+import { randomUUID } from 'node:crypto';
 import { predictBatch, checkMlHealth } from './mlClient.js';
 import { persistReviewEvaluation } from '../repositories/reviewRepository.js';
-import {
-  type RawFindingInput,
-  type FeatureExtractionContext,
-} from '../schemas/finding.js';
-import {
-  type EvaluatedFinding,
-  type ReviewEvaluationResponse,
+import type { SurfaceModelFeatures } from '../schemas/finding.js';
+import type {
+  EvaluatedFinding,
+  ReviewEvaluationResponse,
 } from '../schemas/mlResponse.js';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface ReviewEvaluationRequest {
   repository: string;
   pull_request: number | string;
   findings: Array<{
-    finding: RawFindingInput;
-    context?: FeatureExtractionContext;
+    features: SurfaceModelFeatures;
+    finding_id?: string;
+    file_path: string;
   }>;
 }
 
-// ─── Deterministic fallback ───────────────────────────────────────────────────
-
-function normalizeOverlapFlag(value: unknown): boolean {
-  if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value === 1;
-  if (typeof value === 'string') {
-    const lowered = value.trim().toLowerCase();
-    return lowered === 'true' || lowered === '1';
-  }
-  return false;
+function fallbackDecision(features: SurfaceModelFeatures): 'surface' | 'suppress' {
+  return features.finding_overlaps_change === 1 ? 'surface' : 'suppress';
 }
 
-/**
- * When the ML service is unavailable, use the overlap flag as a cheap proxy.
- * This MUST NOT change the model threshold or any model weight.
- */
-function deterministicFallback(finding: RawFindingInput): EvaluatedFinding & {
-  decisionSource: string;
-  mlStatus: string;
-} {
-  const isOverlap = normalizeOverlapFlag(finding.finding_overlaps_change);
-  const origin_decision = isOverlap ? 'INTRODUCED' : 'PRE_EXISTING';
-
-  return {
-    finding_id: finding.finding_id ?? `${finding.file_path}:${finding.start_line}:${finding.rule_id}`,
-    rule_id: finding.rule_id,
-    file_path: finding.file_path,
-    start_line: finding.start_line,
-    origin_decision,
-    decision_source: 'deterministic_fallback',
-    decisionSource: 'deterministic_fallback',
-    ml_status: 'UNAVAILABLE',
-    mlStatus: 'UNAVAILABLE',
-  };
+function makeFindingId(
+  finding: ReviewEvaluationRequest['findings'][number],
+): string {
+  return finding.finding_id ??
+    `${finding.file_path}:${finding.features.start_line}:${finding.features.rule_id}`;
 }
 
-// ─── Main orchestration ───────────────────────────────────────────────────────
-
-/**
- * Evaluate all findings in a PR using the ML origin-classification service.
- *
- * Flow:
- *  1. Build feature rows for every finding.
- *  2. Call POST /predict/batch in one round-trip.
- *  3. If ML is down, fall back to the deterministic overlap rule for all findings.
- *  4. Return a structured ReviewEvaluationResponse.
- */
 export async function evaluateReview(
   request: ReviewEvaluationRequest,
   requestId?: string,
@@ -84,16 +43,16 @@ export async function evaluateReview(
         review_id,
         finding_id: finding.finding_id,
         ml_status: finding.ml_status,
-        risk_score: finding.risk_score ?? null,
-        decision: finding.origin_decision,
+        ensemble_surface_probability: finding.ensemble_surface_probability ?? null,
+        decision: finding.decision,
         decision_source: finding.decision_source,
         latency_ms: Date.now() - startedAt,
       }));
     }
   };
+
   const persistEvaluation = async (
     response: ReviewEvaluationResponse,
-    featureRows: ReturnType<typeof buildOriginModelFeatures>[] = [],
     modelVersion?: {
       model_version: string;
       positive_class: string;
@@ -107,29 +66,28 @@ export async function evaluateReview(
         pull_request: String(response.pull_request),
         ml_status: response.ml_status,
         total_findings: response.total_findings,
-        introduced_count: response.introduced_count,
-        pre_existing_count: response.pre_existing_count,
+        surface_count: response.surface_count,
+        suppressed_count: response.suppressed_count,
       },
       modelVersion: modelVersion ? {
         ...modelVersion,
-        feature_count: 22,
-        model_family: 'ensemble',
+        feature_count: 55,
+        model_family: 'hybrid_ensemble',
       } : undefined,
-      findings: response.findings.map((finding, index) => ({
+      findings: response.findings.map((finding) => ({
         review_id: response.review_id,
         finding_id: finding.finding_id,
         rule_id: finding.rule_id,
         file_path: finding.file_path,
         start_line: finding.start_line,
-        origin_decision: finding.origin_decision,
+        decision: finding.decision,
         decision_source: finding.decision_source,
         ml_status: finding.ml_status,
-        risk_score: finding.risk_score,
+        ensemble_surface_probability: finding.ensemble_surface_probability,
         threshold: finding.threshold,
         model_version: finding.decision_source === 'MODEL' ? modelVersion?.model_version : null,
-        component_scores: finding.component_scores,
-        features: finding.features ?? featureRows[index],
-        raw_finding: request.findings[index]?.finding,
+        probabilities: finding.probabilities,
+        features: finding.features,
       })),
     });
   };
@@ -141,8 +99,8 @@ export async function evaluateReview(
       pull_request: request.pull_request,
       ml_status: 'OK',
       total_findings: 0,
-      introduced_count: 0,
-      pre_existing_count: 0,
+      surface_count: 0,
+      suppressed_count: 0,
       findings: [],
       timestamp,
     };
@@ -150,87 +108,86 @@ export async function evaluateReview(
     return response;
   }
 
-  // ── Step 1: build features ──
-  const featureRows = request.findings.map(({ finding, context }) =>
-    buildOriginModelFeatures(finding, context),
-  );
-
-  // ── Step 2: call ML service ──
+  const featureRows = request.findings.map(({ features }) => features);
   const mlResult = await predictBatch(featureRows);
 
-  // ── Step 3: handle ML failure ──
   if (!mlResult.ok) {
-    const evaluated: EvaluatedFinding[] = request.findings.map(({ finding }) =>
-      ({ ...deterministicFallback(finding), raw_finding: finding }),
-    );
+    const evaluated: EvaluatedFinding[] = request.findings.map((finding) => ({
+      finding_id: makeFindingId(finding),
+      rule_id: finding.features.rule_id,
+      file_path: finding.file_path,
+      start_line: finding.features.start_line,
+      decision: fallbackDecision(finding.features),
+      decision_source: 'deterministic_fallback',
+      ml_status: 'UNAVAILABLE',
+      features: finding.features,
+    }));
     logEvaluation(evaluated);
 
-    const fallbackResponse: ReviewEvaluationResponse & { mlStatus: string } = {
+    const fallbackResponse: ReviewEvaluationResponse = {
       review_id,
       repository: request.repository,
       pull_request: request.pull_request,
       ml_status: 'UNAVAILABLE',
-      mlStatus: 'UNAVAILABLE',
       total_findings: evaluated.length,
-      introduced_count: evaluated.filter((f) => f.origin_decision === 'INTRODUCED').length,
-      pre_existing_count: evaluated.filter((f) => f.origin_decision === 'PRE_EXISTING').length,
+      surface_count: evaluated.filter((finding) => finding.decision === 'surface').length,
+      suppressed_count: evaluated.filter((finding) => finding.decision === 'suppress').length,
       findings: evaluated,
       timestamp,
     };
-
-    await persistEvaluation(fallbackResponse, featureRows);
+    await persistEvaluation(fallbackResponse);
     return fallbackResponse;
   }
 
-  // ── Step 4: map ML predictions back to findings ──
   const { predictions, threshold, model_version } = mlResult.data;
-  const evaluated: EvaluatedFinding[] = request.findings.map(({ finding }, idx) => {
-    const pred = predictions[idx];
-    if (!pred) {
-      return deterministicFallback(finding);
+  const evaluated: EvaluatedFinding[] = request.findings.map((finding, index) => {
+    const prediction = predictions[index];
+    if (!prediction) {
+      return {
+        finding_id: makeFindingId(finding),
+        rule_id: finding.features.rule_id,
+        file_path: finding.file_path,
+        start_line: finding.features.start_line,
+        decision: fallbackDecision(finding.features),
+        decision_source: 'deterministic_fallback',
+        ml_status: 'UNAVAILABLE',
+        features: finding.features,
+      };
     }
     return {
-      finding_id:
-        finding.finding_id ??
-        `${finding.file_path}:${finding.start_line}:${finding.rule_id}`,
-      rule_id: finding.rule_id,
+      finding_id: makeFindingId(finding),
+      rule_id: finding.features.rule_id,
       file_path: finding.file_path,
-      start_line: finding.start_line,
-      origin_decision: pred.decision,
-      decision_source: 'MODEL' as const,
-      decisionSource: 'MODEL' as const,
-      ml_status: 'OK' as const,
-      mlStatus: 'OK' as const,
-      risk_score: pred.risk_score,
+      start_line: finding.features.start_line,
+      decision: prediction.decision,
+      decision_source: 'MODEL',
+      ml_status: 'OK',
+      ensemble_surface_probability: prediction.ensemble_surface_probability,
       threshold,
-      component_scores: pred.component_scores,
-      features: featureRows[idx],
+      probabilities: prediction.probabilities,
+      features: finding.features,
     };
   });
   logEvaluation(evaluated);
 
   const hasMissingPredictions = predictions.length < request.findings.length;
-
-  const successResponse: ReviewEvaluationResponse & { mlStatus: string } = {
+  const response: ReviewEvaluationResponse = {
     review_id,
     repository: request.repository,
     pull_request: request.pull_request,
     ml_status: hasMissingPredictions ? 'PARTIAL' : 'OK',
-    mlStatus: hasMissingPredictions ? 'PARTIAL' : 'OK',
     total_findings: evaluated.length,
-    introduced_count: evaluated.filter((f) => f.origin_decision === 'INTRODUCED').length,
-    pre_existing_count: evaluated.filter((f) => f.origin_decision === 'PRE_EXISTING').length,
+    surface_count: evaluated.filter((finding) => finding.decision === 'surface').length,
+    suppressed_count: evaluated.filter((finding) => finding.decision === 'suppress').length,
     findings: evaluated,
     timestamp,
   };
-
-  await persistEvaluation(successResponse, featureRows, {
+  await persistEvaluation(response, {
     model_version,
-    positive_class: predictions[0]?.positive_class ?? 'INTRODUCED',
+    positive_class: 'surface',
     threshold,
   });
-  return successResponse;
+  return response;
 }
 
-// Re-export health check for convenience
 export { checkMlHealth };

@@ -1,24 +1,16 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { rawFindingInputSchema } from '../schemas/finding.js';
+import { surfaceModelFeaturesSchema } from '../schemas/finding.js';
 import { evaluateReview } from '../services/reviewService.js';
 
 const router = Router();
 
 // ─── Request schema ───────────────────────────────────────────────────────────
 
-const contextSchema = z.object({
-  fileTotalLines: z.number().int().positive().optional(),
-  changedLines: z.array(z.number().int().min(1)).optional(),
-  prTotalFindingsInFile: z.number().int().min(0).optional(),
-  sameRuleFindingsInFile: z.number().int().min(0).optional(),
-  sameRuleFindingsInRepo: z.number().int().min(0).optional(),
-  prChangeCodeLines: z.number().int().min(0).optional(),
-}).optional();
-
 const findingWithContextSchema = z.object({
-  finding: rawFindingInputSchema,
-  context: contextSchema,
+  features: surfaceModelFeaturesSchema,
+  finding_id: z.string().optional(),
+  file_path: z.string().min(1),
 });
 
 const evaluateRequestSchema = z.object({
@@ -33,8 +25,8 @@ const evaluateRequestSchema = z.object({
  * POST /api/review/evaluate
  *
  * Main PRism orchestration endpoint.
- * Accepts raw ESLint findings + PR context, builds 22-feature rows,
- * classifies each finding as INTRODUCED or PRE_EXISTING, and returns
+ * Accepts already-engineered 43-feature rows,
+ * classifies each finding as SURFACE or SUPPRESS, and returns
  * the structured response.
  *
  * If the ML service is unavailable, a deterministic fallback (overlap flag)

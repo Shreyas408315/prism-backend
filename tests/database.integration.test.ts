@@ -46,10 +46,10 @@ databaseTests('PostgreSQL repository', () => {
     expect(tables.rows.every((row) => row.table_name !== null)).toBe(true);
 
     const applied = await pool.query<{ filename: string }>(
-      'SELECT filename FROM schema_migrations WHERE filename = $1',
-      ['001_initial.sql'],
+      'SELECT filename FROM schema_migrations WHERE filename = ANY($1)',
+      [['001_initial.sql', '002_surface_model.sql']],
     );
-    expect(applied.rowCount).toBe(1);
+    expect(applied.rowCount).toBe(2);
   });
 
   it('inserts a review and finding, stores JSONB, and upserts model metadata', async () => {
@@ -64,15 +64,15 @@ databaseTests('PostgreSQL repository', () => {
       pull_request: '42',
       ml_status: 'OK',
       total_findings: 1,
-      introduced_count: 1,
-      pre_existing_count: 0,
+      surface_count: 1,
+      suppressed_count: 0,
     };
     const metadata: ModelVersionRecord = {
       model_version: modelVersion,
-      positive_class: 'INTRODUCED',
-      threshold: 0.574674670640332,
-      feature_count: 22,
-      model_family: 'ensemble',
+      positive_class: 'surface',
+      threshold: 0.505,
+      feature_count: 55,
+      model_family: 'hybrid_ensemble',
     };
     const finding: FindingRecord = {
       review_id: reviewId,
@@ -80,15 +80,14 @@ databaseTests('PostgreSQL repository', () => {
       rule_id: 'no-unused-vars',
       file_path: 'src/index.ts',
       start_line: 10,
-      origin_decision: 'INTRODUCED',
+      origin_decision: 'surface',
       decision_source: 'MODEL',
       ml_status: 'OK',
-      risk_score: 0.8389374128352186,
+      risk_score: 0.5633,
       threshold: metadata.threshold,
       model_version: modelVersion,
-      component_scores: { random_forest: 0.87 },
+      component_scores: { random_forest: 0.5878 },
       features: { finding_overlaps_change: 1 },
-      raw_finding: { message: 'unused variable' },
     };
 
     const client = await pool.connect();
@@ -116,12 +115,11 @@ databaseTests('PostgreSQL repository', () => {
       expect(insertedReview.rowCount).toBe(1);
       expect(insertedFinding.rowCount).toBe(1);
       expect(insertedFinding.rows[0]).toMatchObject({
-        origin_decision: 'INTRODUCED',
+        origin_decision: 'surface',
         decision_source: 'MODEL',
-        risk_score: finding.risk_score,
-        component_scores: finding.component_scores,
+        risk_score: finding.ensemble_surface_probability,
+        component_scores: finding.probabilities,
         features: finding.features,
-        raw_finding: finding.raw_finding,
       });
       expect(insertedModel.rowCount).toBe(1);
       expect(insertedModel.rows[0].threshold).toBe(0.6);
@@ -143,7 +141,7 @@ databaseTests('PostgreSQL repository', () => {
         rule_id: 'no-unused-vars',
         file_path: 'src/index.ts',
         start_line: 1,
-        origin_decision: 'INTRODUCED',
+        origin_decision: 'surface',
         decision_source: 'MODEL',
         ml_status: 'OK',
       }])).rejects.toMatchObject({ code: '23503' });
@@ -164,8 +162,8 @@ databaseTests('PostgreSQL repository', () => {
         pull_request: 'rollback-test',
         ml_status: 'OK',
         total_findings: 1,
-        introduced_count: 1,
-        pre_existing_count: 0,
+        surface_count: 1,
+        suppressed_count: 0,
       },
       findings: [{
         review_id: randomUUID(),
@@ -173,7 +171,7 @@ databaseTests('PostgreSQL repository', () => {
         rule_id: 'no-unused-vars',
         file_path: 'src/index.ts',
         start_line: 1,
-        origin_decision: 'INTRODUCED',
+        origin_decision: 'surface',
         decision_source: 'MODEL',
         ml_status: 'OK',
       }],

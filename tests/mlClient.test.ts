@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { predictOrigin, predictOriginBatch } from '../src/services/mlClient.js';
+import { surfaceFeatures } from './fixtures/surfaceFeatures.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -7,34 +8,11 @@ afterEach(() => {
 
 describe('mlClient', () => {
   it('sends batch feature rows in items and validates the batch response', async () => {
-    const features = {
-      rule_id: 'no-unused-vars',
-      rule_family: 'possible-problems',
-      severity: 2,
-      is_error: 1,
-      message_length: 30,
-      has_fix: 0,
-      fix_text_length: 0,
-      fix_range_length: 0,
-      has_suggestions: 0,
-      suggestion_count: 0,
-      changed_line_count: 1,
-      file_size_lines: 50,
-      start_line: 5,
-      finding_start_line_ratio: 0.1,
-      finding_span_lines: 1,
-      finding_span_columns: 1,
-      pr_change_code_lines: 1,
-      pr_total_findings_in_file: 1,
-      same_rule_findings_in_file: 1,
-      same_rule_findings_in_repo: 1,
-      finding_overlaps_change: 1,
-      finding_change_distance: 0,
-    };
+    const features = surfaceFeatures;
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
       ok: true,
       json: async () => ({
-        model_version: 'prism-origin-ensemble-clean-v1',
+        model_version: 'eslint-surface-hybrid-ensemble-v1',
         threshold: 0.574674670640332,
         predictions: [],
       }),
@@ -49,7 +27,7 @@ describe('mlClient', () => {
     expect(requestBody.items).toEqual([features]);
     expect(requestBody).not.toHaveProperty('findings');
     if (result.ok) {
-      expect(result.data.model_version).toBe('prism-origin-ensemble-clean-v1');
+      expect(result.data.model_version).toBe('eslint-surface-hybrid-ensemble-v1');
       expect(result.data.predictions).toEqual([]);
     }
   });
@@ -60,48 +38,23 @@ describe('mlClient', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({
-          model_version: 'prism-origin-ensemble-clean-v1',
-          positive_class: 'INTRODUCED',
-          risk_score: 0.838937,
-          decision: 'INTRODUCED',
-          threshold: 0.574674670640332,
-          component_scores: {
-            random_forest: 0.87,
-            logistic_regression: 0.7,
-            xgboost: 0.93,
+          probabilities: {
+            random_forest: 0.5878,
+            logistic_regression: 0.6384,
+            xgboost: 0.5165,
           },
+          ensemble_surface_probability: 0.5633,
+          threshold: 0.574674670640332,
+          decision: 'surface',
         }),
       }),
     );
 
-    const result = await predictOrigin({
-      rule_id: 'no-unused-vars',
-      rule_family: 'possible-problems',
-      severity: 2,
-      is_error: 1,
-      message_length: 30,
-      has_fix: 0,
-      fix_text_length: 0,
-      fix_range_length: 0,
-      has_suggestions: 0,
-      suggestion_count: 0,
-      changed_line_count: 1,
-      file_size_lines: 50,
-      start_line: 5,
-      finding_start_line_ratio: 0.1,
-      finding_span_lines: 1,
-      finding_span_columns: 1,
-      pr_change_code_lines: 1,
-      pr_total_findings_in_file: 1,
-      same_rule_findings_in_file: 1,
-      same_rule_findings_in_repo: 1,
-      finding_overlaps_change: 1,
-      finding_change_distance: 0,
-    });
+    const result = await predictOrigin(surfaceFeatures);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.data.decision).toBe('INTRODUCED');
+      expect(result.data.decision).toBe('surface');
     }
   });
 

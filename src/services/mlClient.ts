@@ -1,5 +1,5 @@
 import { env } from '../config/env.js';
-import type { OriginModelFeatures } from '../schemas/finding.js';
+import type { SurfaceModelFeatures } from '../schemas/finding.js';
 import {
   predictionResultSchema,
   batchPredictionResponseSchema,
@@ -93,7 +93,7 @@ async function mlPost<T>(
  * Returns the full PredictionResult or a typed error.
  */
 export async function predictOrigin(
-  features: OriginModelFeatures,
+  features: SurfaceModelFeatures,
 ): Promise<MlResult<PredictionResult>> {
   return mlPost(
     '/predict',
@@ -118,7 +118,7 @@ export const predictSingle = predictOrigin;
  *   { "items": [ <feature_row>, ... ] }
  */
 export async function predictOriginBatch(
-  featureRows: OriginModelFeatures[],
+  featureRows: SurfaceModelFeatures[],
 ): Promise<MlResult<BatchPredictionResponse>> {
   return mlPost(
     '/predict/batch',

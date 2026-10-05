@@ -3,6 +3,7 @@ import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { closeDatabase, pool } from '../src/db/database.js';
 import { runMigrations } from '../src/db/migrations.js';
+import { surfaceFeatures } from './fixtures/surfaceFeatures.js';
 
 vi.mock('../src/services/mlClient.js', () => ({
   predictSingle: vi.fn(),
@@ -22,28 +23,9 @@ const requestBody = {
   repository: 'org/prism-persistence-integration',
   pull_request: 42,
   findings: [{
-    finding: {
-      finding_id: 'canonical-finding',
-      rule_id: 'no-unused-vars',
-      severity: 2,
-      message: "'x' is defined but never used",
-      start_line: 10,
-      start_column: 4,
-      end_line: 10,
-      end_column: 5,
-      has_fix: false,
-      has_suggestions: false,
-      suggestion_count: 0,
-      file_path: 'src/index.ts',
-      finding_overlaps_change: true,
-    },
-    context: {
-      fileTotalLines: 200,
-      changedLines: [9, 10, 11],
-      prTotalFindingsInFile: 3,
-      sameRuleFindingsInFile: 2,
-      sameRuleFindingsInRepo: 5,
-    },
+    finding_id: 'canonical-finding',
+    file_path: 'src/index.js',
+    features: surfaceFeatures,
   }],
 };
 
@@ -51,18 +33,16 @@ const modelResult = {
   ok: true as const,
   data: {
     model_version: MODEL_VERSION,
-    threshold: 0.574674670640332,
+    threshold: 0.505,
     predictions: [{
-      model_version: MODEL_VERSION,
-      positive_class: 'INTRODUCED' as const,
-      risk_score: 0.8389374128352186,
-      decision: 'INTRODUCED' as const,
-      threshold: 0.574674670640332,
-      component_scores: {
-        random_forest: 0.87,
-        logistic_regression: 0.7,
-        xgboost: 0.93,
+      probabilities: {
+        random_forest: 0.5878,
+        logistic_regression: 0.6384,
+        xgboost: 0.5165,
       },
+      ensemble_surface_probability: 0.5633,
+      threshold: 0.505,
+      decision: 'surface' as const,
     }],
   },
 };
@@ -95,7 +75,7 @@ databaseTests('POST /api/review/evaluate persistence', () => {
     expect(response.status).toBe(200);
     expect(response.body.ml_status).toBe('OK');
     expect(response.body.findings).toHaveLength(1);
-    expect(response.body.findings[0].origin_decision).toBe('INTRODUCED');
+    expect(response.body.findings[0].decision).toBe('surface');
     expect(response.body.findings[0].decision_source).toBe('MODEL');
     reviewIds.push(response.body.review_id);
 
@@ -109,18 +89,18 @@ databaseTests('POST /api/review/evaluate persistence', () => {
     expect(findings.rowCount).toBe(1);
     expect(modelVersions.rowCount).toBe(1);
     expect(modelVersions.rows[0]).toMatchObject({
-      positive_class: 'INTRODUCED',
-      threshold: 0.574674670640332,
-      feature_count: 22,
-      model_family: 'ensemble',
+      positive_class: 'surface',
+      threshold: 0.505,
+      feature_count: 55,
+      model_family: 'hybrid_ensemble',
     });
     expect(findings.rows[0]).toMatchObject({
       finding_id: 'canonical-finding',
-      origin_decision: 'INTRODUCED',
+      origin_decision: 'surface',
       decision_source: 'MODEL',
-      risk_score: 0.8389374128352186,
+      risk_score: 0.5633,
       model_version: MODEL_VERSION,
-      component_scores: modelResult.data.predictions[0].component_scores,
+      component_scores: modelResult.data.predictions[0].probabilities,
     });
   });
 
@@ -134,7 +114,7 @@ databaseTests('POST /api/review/evaluate persistence', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.ml_status).toBe('UNAVAILABLE');
-    expect(response.body.findings[0].origin_decision).toBe('INTRODUCED');
+    expect(response.body.findings[0].decision).toBe('surface');
     expect(response.body.findings[0].decision_source).toBe('deterministic_fallback');
     reviewIds.push(response.body.review_id);
 
@@ -144,7 +124,7 @@ databaseTests('POST /api/review/evaluate persistence', () => {
     expect(findings.rowCount).toBe(1);
     expect(findings.rows[0]).toMatchObject({
       finding_id: 'canonical-finding',
-      origin_decision: 'INTRODUCED',
+      origin_decision: 'surface',
       decision_source: 'deterministic_fallback',
       ml_status: 'UNAVAILABLE',
       risk_score: null,
@@ -152,9 +132,6 @@ databaseTests('POST /api/review/evaluate persistence', () => {
       model_version: null,
       component_scores: null,
     });
-    expect(findings.rows[0].raw_finding).toMatchObject({
-      rule_id: 'no-unused-vars',
-      finding_id: 'canonical-finding',
-    });
+    expect(findings.rows[0].features).toMatchObject({ rule_id: 'no-unused-vars' });
   });
 });

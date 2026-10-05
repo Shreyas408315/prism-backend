@@ -1,0 +1,3 @@
+ALTER TABLE reviews
+  ADD COLUMN surface_count INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN suppressed_count INTEGER NOT NULL DEFAULT 0;

@@ -8,8 +8,8 @@ export interface ReviewRecord {
   pull_request: string;
   ml_status: string;
   total_findings: number;
-  introduced_count: number;
-  pre_existing_count: number;
+  surface_count: number;
+  suppressed_count: number;
 }
 
 export interface FindingRecord {
@@ -18,13 +18,13 @@ export interface FindingRecord {
   rule_id: string;
   file_path: string;
   start_line: number;
-  origin_decision: string;
+  decision: string;
   decision_source: string;
   ml_status: string;
-  risk_score?: number | null;
+  ensemble_surface_probability?: number | null;
   threshold?: number | null;
   model_version?: string | null;
-  component_scores?: Record<string, number> | null;
+  probabilities?: Record<string, number> | null;
   features?: unknown;
   raw_finding?: unknown;
 }
@@ -50,16 +50,17 @@ function jsonValue(value: unknown): string | null {
 export async function createReview(client: PoolClient, review: ReviewRecord): Promise<void> {
   await client.query(
     `INSERT INTO reviews
-      (id, repository, pull_request, ml_status, total_findings, introduced_count, pre_existing_count)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      (id, repository, pull_request, ml_status, total_findings,
+       introduced_count, pre_existing_count, surface_count, suppressed_count)
+     VALUES ($1, $2, $3, $4, $5, 0, 0, $6, $7)`,
     [
       review.id,
       review.repository,
       review.pull_request,
       review.ml_status,
       review.total_findings,
-      review.introduced_count,
-      review.pre_existing_count,
+      review.surface_count,
+      review.suppressed_count,
     ],
   );
 }
@@ -73,8 +74,8 @@ export async function createFindings(
       `INSERT INTO findings
         (id, review_id, finding_id, rule_id, file_path, start_line, origin_decision,
          decision_source, ml_status, risk_score, threshold, model_version,
-         component_scores, features, raw_finding)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb)`,
+         component_scores, features)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb)`,
       [
         randomUUID(),
         finding.review_id,
@@ -82,15 +83,14 @@ export async function createFindings(
         finding.rule_id,
         finding.file_path,
         finding.start_line,
-        finding.origin_decision,
+        finding.decision,
         finding.decision_source,
         finding.ml_status,
-        finding.risk_score ?? null,
+        finding.ensemble_surface_probability ?? null,
         finding.threshold ?? null,
         finding.model_version ?? null,
-        jsonValue(finding.component_scores),
+        jsonValue(finding.probabilities),
         jsonValue(finding.features),
-        jsonValue(finding.raw_finding),
       ],
     );
   }
